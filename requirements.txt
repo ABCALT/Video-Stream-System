@@ -1,0 +1,24 @@
+# Web框架
+fastapi==0.104.1
+uvicorn==0.24.0
+
+# 数据库
+sqlalchemy==2.0.23
+alembic==1.12.1
+
+# 视频处理
+opencv-python==4.8.1.78
+ffmpeg-python==0.2.0
+
+# 工具库
+python-dotenv==1.0.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# HTTP客户端
+httpx==0.25.1
+requests==2.31.0
+
+# 其他
+python-multipart==0.0.6
+
