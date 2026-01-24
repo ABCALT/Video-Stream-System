@@ -12,6 +12,11 @@ FastAPI 应用入口。
 from fastapi import FastAPI
 
 from backend.api.device_management.hello_world import router as hello_world_router
+from backend.api.device_management.device_ping import (
+    get_ping_manager,
+    router as device_ping_router,
+)
+from backend.api.device_management.camera_operation import router as camera_operation_router
 
 
 def create_app() -> FastAPI:
@@ -23,6 +28,17 @@ def create_app() -> FastAPI:
 
     # 注册路由
     app.include_router(hello_world_router)
+    app.include_router(device_ping_router)
+    app.include_router(camera_operation_router)
+
+    # @app.on_event("startup")
+    # async def _startup() -> None:
+    #     # 启动后台定时检测（仅单进程内存版；生产多进程需改造）
+    #     await get_ping_manager().start()
+    #
+    # @app.on_event("shutdown")
+    # async def _shutdown() -> None:
+    #     await get_ping_manager().stop()
 
     return app
 
