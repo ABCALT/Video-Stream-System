@@ -12,7 +12,7 @@ import json
 import subprocess
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union, List
 
 try:
     import cv2
@@ -20,8 +20,9 @@ try:
 except ImportError:
     CV2_AVAILABLE = False
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
+import socket
 
 
 router = APIRouter(prefix="/api/stream", tags=["video_stream"])
@@ -31,14 +32,16 @@ DATA_DIR = Path(__file__).parent.parent.parent / "data"
 STREAMS_FILE = DATA_DIR / "streams.json"
 
 # 存储活跃的FFMPEG进程
-_active_processes: dict[str, subprocess.Popen] = {}
+# _active_processes: dict[str, subprocess.Popen] = {} # rtsp url: ffmpeg进程
+from backend.api.Buffer import _active_processes
 
 
 class StartStreamRequest(BaseModel):
     """启动流请求模型"""
-    video_path: str
-    stream_name: str
-    host: str = "127.0.0.1"
+    camera_id: Union[str, List[str]]
+    camera_name: Union[str, List[str]]
+    video_path: Union[str, List[str]]
+    host: Optional[Union[str, List[str]]] = "127.0.0.1"
     port: int = 8554
 
 
@@ -72,9 +75,21 @@ def _save_streams(data: dict) -> None:
     with open(STREAMS_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+async def is_port_open(host = "127.0.0.1", port = 8554, timeout=1):
+    '''
+    检测rtsp推流端口是否可用, 这里只是简单检测一下, 一般只有mediamtx会在8554端口推流, 这里如果被其他程序占用端口则没办法检测mediamtx是否开启推流
+    其他方法进行检测会比较复杂并且可能会导致不同电脑频繁更换配置, 因此需要十分确定这个8554端口和mediamtx是深度绑定的(在mediamtx.yml配置文件中设置rtspAddress端口为8554, 一般是默认的)
+    '''
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(timeout)
+        try:
+            s.connect((host, port))
+            return True
+        except Exception:
+            return False
 
 @router.post("/start")
-async def start_stream(request: StartStreamRequest) -> dict:
+async def start_stream(request: StartStreamRequest) -> dict: # ATTN: 通过video_path获取RTSP URL
     """
     启动视频流推送。
     
@@ -86,76 +101,125 @@ async def start_stream(request: StartStreamRequest) -> dict:
     Returns:
         包含成功状态和RTSP URL的字典
     """
+    # 兼容 video_path 为 str 或 list[str]
+    if isinstance(request.video_path, str):
+        video_paths = [request.video_path]
+    else:
+        video_paths = list(request.video_path)
+
+    # 基本校验
+    if not video_paths:
+        raise HTTPException(status_code=400, detail="video_path 不能为空")
+
+    invalid_paths = [p for p in video_paths if not isinstance(p, str) or not p.strip()]
+    if invalid_paths:
+        raise HTTPException(status_code=400, detail=f"video_path 中存在非法路径: {invalid_paths}")
+
     # 检查视频文件是否存在
-    if not os.path.exists(request.video_path):
-        raise HTTPException(status_code=400, detail=f"视频文件不存在: {request.video_path}")
+    missing_paths = [p for p in video_paths if not os.path.exists(p)]
+    if missing_paths:
+        raise HTTPException(status_code=400, detail=f"视频文件不存在: {missing_paths}")
     
-    # 检查流是否已存在
-    if request.stream_name in _active_processes:
-        raise HTTPException(status_code=400, detail=f"流 {request.stream_name} 已在运行")
-    
-    # 构建RTSP URL
-    rtsp_url = f"rtsp://{request.host}:{request.port}/live/{request.stream_name}"
-    
-    # 构建FFMPEG命令
-    # -re: 以原始帧率读取
-    # -stream_loop -1: 循环播放
-    # -c copy: 复制编码（不重新编码）
-    # -f rtsp: 输出格式为RTSP
-    ffmpeg_cmd = [
-        "ffmpeg",
-        "-re",
-        "-stream_loop", "-1",
-        "-i", request.video_path,
-        "-c", "copy",
-        "-f", "rtsp",
-        rtsp_url
-    ]
-    
-    try:
-        # 启动FFMPEG进程
-        process = subprocess.Popen(
-            ffmpeg_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+
+    # 兼容 stream_name 为 str 或 list[str]，并与 video_path 一一对应
+    if isinstance(request.camera_id, str):
+        camera_ids = [request.camera_id]
+    else:
+        camera_ids = list(request.camera_id)
+
+    if isinstance(request.camera_name, str):
+        camera_names = [request.camera_name]
+    else:
+        camera_names = list(request.camera_name)
+
+    if isinstance(request.host, str):
+        camera_hosts = [request.host]
+        if camera_hosts[0] == "127.0.0.1":
+            camera_hosts = ["127.0.0.1"]*len(camera_ids)
+    else:
+        camera_names = list(request.camera_name)
+
+    if not (len(camera_ids) == len(video_paths) == len(camera_names) == len(camera_hosts)):
+        raise HTTPException(
+            status_code=400,
+            detail=f"video_path、camera_ids、camera_names、camera_hosts 数量不一致: {len(video_paths)} vs {len(camera_ids)} vs {len(camera_names)} vs {len(camera_hosts)}"
         )
-        
-        # 存储进程引用
-        _active_processes[request.stream_name] = process
-        
-        # 更新持久化数据
+
+    # 如果一次请求启动多个流，返回每个流的 rtsp_url
+    # 单个流保持原返回结构，尽量兼容旧调用方
+    stream_results: list[dict] = []
+
+    for video_path, camera_id, camera_name, camera_host in zip(video_paths, camera_ids, camera_names, camera_hosts):
+        stream_name = f"{camera_name}_{camera_id}"
+        if stream_name in _active_processes:
+            raise HTTPException(status_code=400, detail=f"流 {stream_name} 已在运行")
+
+        MEDIAMTX_OPEN = is_port_open()
+        if not MEDIAMTX_OPEN:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="mediamtx没有打开, 并且请确保8554端口是和meidia.yml配置文件中的rtspAddress相匹配"
+            )
+        rtsp_url = f"rtsp://{camera_host}:{request.port}/live/{stream_name}"
+        ffmpeg_cmd = [
+            "ffmpeg",
+            "-re",
+            "-stream_loop", "-1",
+            "-i", video_path,
+            "-c", "copy",
+            "-f", "rtsp",
+            rtsp_url
+        ]
+
+        try:
+            process = subprocess.Popen(
+                ffmpeg_cmd,
+                stdout=subprocess.DEVNULL, # ATTN: 使用subprocess.PIPE会导致FFmpeg将输出的内容存放到python缓冲区, 并且这里没有写读取(消耗)缓冲区信息的代码会导致缓冲区堵塞, 将推流停止
+                stderr=subprocess.DEVNULL, # ATTN: 同上, 使用subprocess.DEVNULL不会将输出内容放到缓冲区
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            )
+        except FileNotFoundError:
+            raise HTTPException(
+                status_code=500,
+                detail="FFMPEG未安装或不在系统PATH中"
+            )
+
+        _active_processes[stream_name] = process
+
         streams_data = _load_streams()
         stream_info = {
-            "name": request.stream_name,
-            "video_path": request.video_path,
+            "name": stream_name,
+            "video_path": video_path,
             "rtsp_url": rtsp_url,
             "host": request.host,
             "port": request.port
         }
-        
-        # 检查是否已存在，更新或添加
-        existing = [s for s in streams_data["streams"] if s["name"] == request.stream_name]
+
+        existing = [s for s in streams_data["streams"] if s["name"] == stream_name]
         if existing:
             existing[0].update(stream_info)
         else:
             streams_data["streams"].append(stream_info)
-        
+
         _save_streams(streams_data)
-        
+
+        stream_results.append({
+            "stream_name": stream_name,
+            "rtsp_url": rtsp_url
+        })
+
+    if len(stream_results) == 1:
         return {
             "success": True,
-            "rtsp_url": rtsp_url,
-            "message": f"视频流 {request.stream_name} 已启动"
+            "rtsp_url": stream_results[0]["rtsp_url"],
+            "message": f"视频流 {stream_results[0]['stream_name']} 已启动"
         }
-        
-    except FileNotFoundError:
-        raise HTTPException(
-            status_code=500, 
-            detail="FFMPEG未安装或不在系统PATH中"
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"启动流失败: {str(e)}")
+
+    return {
+        "success": True,
+        "streams": stream_results,
+        "message": f"已启动 {len(stream_results)} 路视频流"
+    }
 
 
 @router.post("/stop")
@@ -183,6 +247,7 @@ async def stop_stream(request: StopStreamRequest) -> dict:
         process.wait(timeout=5)
         
         # 移除进程引用
+        _active_processes[stream_name].kill()
         del _active_processes[stream_name]
         
         # 更新持久化数据

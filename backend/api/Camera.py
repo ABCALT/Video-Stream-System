@@ -6,8 +6,9 @@ from __future__ import annotations
 
 import asyncio
 import pickle
+import subprocess
 from pathlib import Path
-from typing import Any, Tuple, TypedDict, Union
+from typing import Any, Tuple, TypedDict, List, Union, Optional
 from pydantic import BaseModel
 from urllib.parse import urlparse
 from fastapi import FastAPI, APIRouter
@@ -16,13 +17,14 @@ from backend.api.device_management.device_ping import ping_once as _device_ping_
 
 
 class CameraData(BaseModel):
-    camera_id: str
-    camera_ip: str
-    camera_name: str
-    camera_location: Tuple[float, float]
-    accessible: bool
-    protocol_in: str
-    protocol_out: str
+    camera_id: Union[str, List[str]]
+    camera_ip: Union[str, List[str]]
+    camera_name: Union[str, List[str]]
+    camera_location: Union[Tuple[float, float], List[Tuple[float, float]]]
+    accessible: Optional[bool] = False
+    protocol_in: Optional[str] = None
+    protocol_out: Optional[str] = None
+    video_path: Union[str, List[str]]
 
 class Camera:
     def __init__(
@@ -34,6 +36,7 @@ class Camera:
         accessible: bool,
         protocol_in: str,
         protocol_out: str,
+        video_path:str,
     ) -> None:
         self._camera_id = camera_id
         self._camera_ip = camera_ip
@@ -42,6 +45,9 @@ class Camera:
         self._accessible = accessible
         self._protocol_in = protocol_in # video_stream: backend (e.g., rtsp_url)
         self._protocol_out = protocol_out # video_stream: frontend(e.g., WebRTC)
+        self._video_path = video_path # 模拟摄像机需要一个视频路径来模拟
+        # ffmpeg 推流进程（用于模拟摄像头）
+        self._stream_process: asyncio.subprocess.Process | None = None
         # status_code：HTTP 用 HTTP 状态码；RTSP 用 ffprobe returncode（成功为 0）；未知/失败为 -1
         self._status_code: int = -1
         self._last_ping: dict[str, Any] | None = None
@@ -67,6 +73,9 @@ class Camera:
 
     def get_protocol_out(self) -> str:
         return self._protocol_out
+
+    def get_video_path(self) -> str:
+        return self._video_path
 
     def get_status_code(self) -> int:
         return self._status_code
@@ -104,6 +113,9 @@ class Camera:
 
     def set_protocol_out(self, protocol_out: str) -> None:
         self._protocol_out = protocol_out
+
+    def set_video_path(self, video_path) -> None:
+        self._video_path = video_path
 
     def set_status_code(self, status_code: int) -> None:
         self._status_code = status_code
@@ -156,13 +168,14 @@ class Camera:
             "status_code": self._status_code,
         }
 
+        # await asyncio.sleep(0.01)
         return {
             "Camera_Name": self.get_camera_name(),
             "Camera_Id": self.get_camera_id(),
             "Online": result.ok
         }
 
-        # return dict(self._last_ping) # NOTE: 是否要返回所有的ping的结果, 还是说对于相机来说我只关心它是否可以被ping到是否可以传输视频(只关注result.ok)
+            # return dict(self._last_ping) # NOTE: 是否要返回所有的ping的结果, 还是说对于相机来说我只关心它是否可以被ping到是否可以传输视频(只关注result.ok)
 
     def ping_once_sync(self, timeout_s: float = 5.0) -> dict[str, Any]:
         """
