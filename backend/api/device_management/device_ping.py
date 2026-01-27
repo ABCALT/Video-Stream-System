@@ -20,6 +20,8 @@ from pydantic import BaseModel, Field
 from backend.api.device_management.rtsp_ffprobe import probe_rtsp_with_ffprobe
 # from backend.api.Camera import _DB_PATH as _Camera_DB_PAHT
 
+client = httpx.AsyncClient(timeout=0.5)
+
 
 ProtocolType = Literal["http", "rtsp"]
 
@@ -92,12 +94,36 @@ async def _ping_rtsp(url: str, timeout_s: float) -> PingResult:
             detail=f"{type(e).__name__}: {e}",
         )
 
+async def _is_rtsp_stream_ready(stream_name: str):
+    # MediaMTX 默认 API 端口是 9997
+    api_url = f"http://127.0.0.1:9997/v3/paths/get/{stream_name}"
+    if stream_name.find("Camera4_748726") != -1:
+        print(stream_name)
+    # async with httpx.AsyncClient() as client:
+    try:
+        resp = await client.get(api_url)
+        if resp.status_code == 200:
+            # ready 为 true 表示推流正在运行且可以被拉取
+            return resp.json().get("ready", False)
+    except Exception:
+        return False
+    return False
 
 async def ping_once(protocol: ProtocolType, url: str, timeout_s: float) -> PingResult:
     if protocol == "http":
         return await _ping_http(url, timeout_s)
     if protocol == "rtsp":
-        return await _ping_rtsp(url, timeout_s)
+        # return await _ping_rtsp(url, timeout_s)
+        stream_name = url.split(":")[-1][5:]
+        stream_is_open = await _is_rtsp_stream_ready(stream_name)
+        return PingResult(
+            ok=stream_is_open,
+            protocol="rtsp",
+            url=url,
+            elapsed_ms=0.,
+            detail="None",
+            extra="None",
+        )
     raise ValueError(f"unsupported protocol: {protocol}")
 
 @dataclass

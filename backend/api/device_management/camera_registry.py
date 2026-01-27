@@ -180,6 +180,7 @@ class CameraRegistry:
         Raises:
             KeyError: 摄像头不存在
         """
+        await asyncio.sleep(0.01)
         camera = self.get_camera(camera_id)
         if camera is None:
             raise KeyError(f"Camera not found: {camera_id}")
@@ -219,6 +220,11 @@ class CameraRegistry:
             for cam in cameras
         ]
         results = await asyncio.gather(*tasks, return_exceptions=return_exceptions)
+        #
+        # for cam_result in results:
+        #     cam_id = cam_result['Camera_Id']
+        #     up_date_cam = self.get_camera(cam_id)
+        #     up_date_cam.set_accessible(cam_result['Online'])
         
         return {
             "total": len(results),
