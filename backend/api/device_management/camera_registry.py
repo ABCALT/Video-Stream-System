@@ -91,9 +91,10 @@ class CameraRegistry:
             camera_ip=data.camera_ip,
             camera_name=data.camera_name,
             camera_location=data.camera_location,
+            video_path=data.video_path,
             accessible=data.accessible,
-            protocal_in=data.protocal_in,
-            protocal_out=data.protocal_out,
+            protocol_in=data.protocol_in,
+            protocol_out=data.protocol_out,
         )
         self.add_camera(camera)
         return camera

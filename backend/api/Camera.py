@@ -20,7 +20,7 @@ class CameraData(BaseModel):
     camera_id: Union[str, List[str]]
     camera_ip: Union[str, List[str]]
     camera_name: Union[str, List[str]]
-    camera_location: Union[Tuple[float, float], List[Tuple[float, float]]]
+    camera_location: Optional[Tuple[float, float]] = None
     accessible: Optional[bool] = False
     protocol_in: Optional[str] = None
     protocol_out: Optional[str] = None

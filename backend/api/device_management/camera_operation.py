@@ -21,7 +21,7 @@ from backend.api.Buffer import _registry, _active_processes
 
 router = APIRouter(prefix="/api/device", tags=["camera_operation"])
 
-@router.post("/cameras/simulate_camera_from_video")
+#@router.post("/cameras/simulate_camera_from_video")
 async def simulate_cameras_from_video(data: CameraData) -> Dict[str, Any]: # (实例化摄像头类)根据本地视频模拟摄像头
     try:
         # 1) 规范化为 list 并校验长度一致
@@ -114,7 +114,8 @@ async def simulate_cameras_from_video(data: CameraData) -> Dict[str, Any]: # (�
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"模拟摄像头失败: {str(e)}")
 
-@router.post("/cameras/load_from_db")
+
+#@router.post("/cameras/load_from_db") # ATTN: 不暴露给前端
 async def load_cameras_from_db() -> Dict[str, Any]:
     """
     从数据库中读取所有 Camera 实例到内存。
@@ -133,7 +134,7 @@ async def load_cameras_from_db() -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"加载失败: {str(e)}")
 
 
-@router.post("/cameras/save_to_db")
+# @router.post("/cameras/save_to_db") ATTN: 不暴露给前端
 async def save_cameras_to_db() -> Dict[str, Any]:
     """
     将当前内存中的所有 Camera 实例保存到数据库。
@@ -221,6 +222,7 @@ async def add_camera(data: CameraData | Dict[str, Any]) -> Dict[str, Any]:
 
         # 创建并添加摄像头
         camera = _registry.add_camera_from_data(payload)
+        await save_cameras_to_db()
 
         return {
             "success": True,
@@ -253,6 +255,8 @@ async def remove_camera(camera_id: str) -> Dict[str, Any]:
             }
 
         success = _registry.remove_camera(camera_id)
+        # ATTN: 调用保存数据到pkl文件
+        await save_cameras_to_db()
         if success:
             return {
                 "success": True,
@@ -317,7 +321,7 @@ async def start_camera_stream(camera_id: str) -> Dict[str, Any]:
 
         # 更新 camera 实例的 protocol_in
         camera.set_protocol_in(rtsp_url)
-        
+
         await asyncio.sleep(0.1)
         return {
             "success": True,
@@ -426,6 +430,8 @@ async def get_all_cameras_status() -> Dict[str, Any]:
         status_list: List[Dict[str, Any]] = []
         for camera in cameras:
             camera_id = camera.get_camera_id()
+            # if camera_id == "769670":
+            #     print("Check In")
 
             # 从 ping 结果中查找对应的结果
             ping_result = None
@@ -463,7 +469,7 @@ async def get_all_cameras_status() -> Dict[str, Any]:
 
 
 @router.get("/cameras/list")
-async def list_all_cameras() -> Dict[str, Any]:
+async def list_all_cameras() -> Dict[str, Any]: # ATTN: Not use
     """
     获取当前内存中所有 Camera 实例的基本信息（不执行 ping）。
 
@@ -512,7 +518,7 @@ async def get_camera_stats() -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"获取统计信息失败: {str(e)}")
 
 
-@router.post("/cameras/healthcheck/start")
+# @router.post("/cameras/healthcheck/start") ATTN: 不暴露给前端
 async def start_cameras_healthcheck(interval_s: float = 30.0, timeout_s: float = 5.0) -> Dict[str, Any]:
     """启动后台定期健康检查（RTSP/HTTP 可用性检测）。"""
     try:
@@ -527,7 +533,7 @@ async def start_cameras_healthcheck(interval_s: float = 30.0, timeout_s: float =
         raise HTTPException(status_code=500, detail=f"启动健康检查失败: {str(e)}")
 
 
-@router.post("/cameras/healthcheck/stop")
+# @router.post("/cameras/healthcheck/stop") ATTN: 不暴露给前端
 async def stop_cameras_healthcheck() -> Dict[str, Any]:
     """停止后台定期健康检查。"""
     try:
@@ -540,7 +546,7 @@ async def stop_cameras_healthcheck() -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"停止健康检查失败: {str(e)}")
 
 
-@router.get("/cameras/healthcheck/status")
+# @router.get("/cameras/healthcheck/status")
 async def get_cameras_healthcheck_status() -> Dict[str, Any]:
     """查询后台定期健康检查是否在运行。"""
     try:
@@ -564,6 +570,74 @@ async def run_cameras_healthcheck_once(timeout_s: float = 5.0) -> Dict[str, Any]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"执行健康检查失败: {str(e)}")
 
+from pydantic import BaseModel
+
+class SetVideoPathRequest(BaseModel):
+    camera_id: str
+    video_path: str
+
+@router.post("/cameras/set_camera_data")
+async def set_camera_data(data: CameraData) -> Dict[str, Any]:
+    """
+    修改摄像头参数, 与添加摄像头输入一致
+    """
+    camera_id = data.camera_id
+    new_video_path = data.video_path
+
+    try:
+        # 1. 查找摄像头实例
+        camera = _registry.get_camera(camera_id)
+        if camera is None:
+            raise HTTPException(status_code=404, detail=f"没有找到摄像头：{camera_id}")
+
+        # 2. 停止当前推流 (如果正在运行)
+        try:
+            await stop_camera_stream(camera_id)
+        except Exception as e:
+            # 即便停止失败也继续尝试，因为可能流本来就不存在
+            print(f"停止旧推流时出现问题 (可忽略): {e}")
+
+        # 3. 更新 video_path
+        # 假设 Camera 类有 set_video_path 方法, 如果没有，需要添加或直接修改属性
+        # 此处我们直接修改，因为 Camera 类没有提供 set_video_path 方法
+        camera.set_camera_ip(data.camera_ip)
+        camera.set_camera_name(data.camera_name)
+        if data.camera_location != None:
+            camera.set_camera_location(data.camera_location)
+        camera.set_accessible(False) # 只要设置就默认不在先, 需要获取最新状态得再进行ping
+        camera.set_video_path(new_video_path)
+        if data.protocol_in == None:
+            # 4. 启动新推流
+            start_response = await start_camera_stream(camera_id)
+            # print(f"After Set VideoPath: {camera.video_path}")
+            if not start_response.get("success"):
+                # 如果启动失败，需要将异常信息传递出去
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"启动新推流失败: {start_response.get('message', '未知错误')}"
+                )
+
+            new_protocol_in = start_response["camera"]["rtsp_url"]
+            camera.set_protocol_in(new_protocol_in)
+            new_stream_id = f"{data.camera_name}_{data.camera_id}"
+            new_protocol_out = convert_rtsp_to_webrtc(new_stream_id, None)
+            camera.set_protocol_out(new_protocol_out)
+
+        # 5. 保存到数据库
+        _registry.save_to_db()
+
+        return {
+            "success": True,
+            "message": f"成功更新摄像头 {camera_id} 的视频路径并重启推流",
+            "camera_id": camera_id,
+            "new_video_path": new_video_path,
+            "stream_info": start_response.get("camera"),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"更新视频路径失败: {str(e)}")
 
 if __name__ == "__main__":
 
@@ -594,6 +668,8 @@ if __name__ == "__main__":
         "CAMERA_SELFTEST_VIDEO_PATH",
         "F:\\UCF-Crime\\UCF-Crime-test\\Normal_Videos_935_x264.mp4",
     )
+
+    test_video_path_1 = "F:\\UCF-Crime\\UCF-Crime-test\\Normal_Videos_924_x264.mp4"
 
     async def _self_test() -> None:
         global _registry
@@ -692,6 +768,35 @@ if __name__ == "__main__":
             r7 = await run_cameras_healthcheck_once(timeout_s=1.0)
             print(r7)
 
+        # 测试 set_camera_video_path：对其中一个摄像头切换视频并重启推流
+        print("[10.5] set_camera_video_path")
+        new_video_path = os.getenv(
+            "CAMERA_SELFTEST_NEW_VIDEO_PATH",
+            test_video_path_1,
+        )
+        if selected_cameras_id:
+            req = CameraData(
+                camera_id = selected_cameras_id[0],
+                camera_ip = "127.0.0.1",
+                camera_name = "ChangedCamera",
+                camera_location = None,
+                video_path = test_video_path_1
+            )
+            r_set = await set_camera_data(req)
+            print(r_set)
+            r7 = await run_cameras_healthcheck_once(timeout_s=1.0)
+            print(r7)
+            r_stop = await stop_camera_stream(selected_cameras_id[0])
+            print(r_stop)
+            r7 = await run_cameras_healthcheck_once(timeout_s=1.0)
+            print(r7)
+            for i in range(10):
+                all_camera_status = await get_all_cameras_status()
+                print(all_camera_status)
+
+        else:
+            print("selected_cameras_id 为空，跳过 set_camera_video_path 测试")
+
         loops = int(os.getenv("CAMERA_SELFTEST_STATUS_LOOPS", "0"))
         if loops > 0:
             for _ in range(loops):
@@ -701,6 +806,25 @@ if __name__ == "__main__":
         print("[11] stop_cameras_healthcheck")
         r8 = await stop_cameras_healthcheck()
         print(r8)
+
+        # "camera_id",
+        # "camera_ip",
+        # "camera_name",
+        # "camera_location",
+        # "video_path",  # 目前从本地视频模拟摄像头需要指定一个视频路径
+        # "accessible",
+        add_payload = {
+            "camera_id": "add_test",
+            "camera_ip": "127.0.0.1",
+            "camera_name": "AddTestCamera",
+            "camera_location": (1, 1),
+            "video_path": test_video_path_1,
+            "accessible": False,
+            "protocol_in": "rtsp",
+            "protocol_out": "http",
+        }
+        print("[12_pre] add_camera")
+        r9_pre = await add_camera(add_payload)
 
         print("[12] remove_camera")
         r9 = await remove_camera(camera_id)
