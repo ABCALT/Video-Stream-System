@@ -5,6 +5,7 @@
 - Router 前缀：`/api/device`
 - Tag：`camera_operation`
 
+可通过backend/main.py来启动
 ## 1) 添加摄像头
 
 - 路由：`POST /api/device/cameras/add`
