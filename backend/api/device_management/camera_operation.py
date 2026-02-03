@@ -23,7 +23,103 @@ from backend.api.video_stream.camera_stream import convert_rtsp_to_hls, convert_
 
 from backend.api.Buffer import _registry, _active_processes, device_ip
 
+from backend.api.grounded_phrase.service import phrase_grounding_annotate_frame
+from backend.api.grounded_tracking.service import mjpeg_tracking_annotate_frame
+
 router = APIRouter(prefix="/api/device", tags=["camera_operation"])
+
+
+@router.get("/cameras/{camera_id}/grounded_phrase", summary="对摄像头当前流做phrase grounding（单帧）")
+async def grounded_phrase_on_camera(
+    camera_id: str,
+    prompt: str,
+    timeout_sec: float = 5.0,
+    jpeg_quality: int = 95,
+):
+    """读取指定 camera 的 protocol_in(RTSP) 单帧，并执行Florence-2 phrase grounding。
+
+    返回：JPEG二进制（image/jpeg）
+    """
+
+    cam = _registry.get_camera(camera_id)
+    if cam is None:
+        raise HTTPException(status_code=404, detail=f"camera_id not found: {camera_id}")
+
+    rtsp_url = cam.get_protocol_in()
+    if not rtsp_url:
+        raise HTTPException(status_code=400, detail="camera protocol_in(rtsp_url) is empty")
+
+    try:
+        from backend.api.grounded_phrase.service import read_rtsp_frame
+
+        frame = read_rtsp_frame(rtsp_url, timeout_sec=timeout_sec)
+        annotated, _parsed = phrase_grounding_annotate_frame(frame, prompt)
+    except TimeoutError as e:
+        raise HTTPException(status_code=504, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"grounded_phrase failed: {e}")
+
+    ok, out_jpg = cv2.imencode(
+        ".jpg",
+        annotated,
+        [int(cv2.IMWRITE_JPEG_QUALITY), int(jpeg_quality)],
+    )
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to encode annotated image")
+
+    from fastapi.responses import Response
+
+    return Response(content=out_jpg.tobytes(), media_type="image/jpeg")
+
+
+@router.get("/cameras/{camera_id}/grounded_tracking", summary="对摄像头当前流做Grounded-SAM2标注（单帧）")
+async def grounded_tracking_on_camera(
+    camera_id: str,
+    text: str,
+    timeout_sec: float = 5.0,
+    jpeg_quality: int = 95,
+    detection_threshold: float = 0.25,
+    text_threshold: float = 0.25,
+):
+    """读取指定 camera 的 protocol_in(RTSP) 单帧，并执行GroundingDINO+SAM2标注。
+
+    返回：JPEG二进制（image/jpeg）
+    """
+
+    cam = _registry.get_camera(camera_id)
+    if cam is None:
+        raise HTTPException(status_code=404, detail=f"camera_id not found: {camera_id}")
+
+    rtsp_url = cam.get_protocol_in()
+    if not rtsp_url:
+        raise HTTPException(status_code=400, detail="camera protocol_in(rtsp_url) is empty")
+
+    try:
+        from backend.api.grounded_tracking.service import read_rtsp_frame
+
+        frame = read_rtsp_frame(rtsp_url, timeout_sec=timeout_sec)
+        annotated, _debug = mjpeg_tracking_annotate_frame(
+            frame_bgr=frame,
+            text=text,
+            detection_threshold=detection_threshold,
+            text_threshold=text_threshold,
+        )
+    except TimeoutError as e:
+        raise HTTPException(status_code=504, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"grounded_tracking failed: {e}")
+
+    ok, out_jpg = cv2.imencode(
+        ".jpg",
+        annotated,
+        [int(cv2.IMWRITE_JPEG_QUALITY), int(jpeg_quality)],
+    )
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to encode annotated image")
+
+    from fastapi.responses import Response
+
+    return Response(content=out_jpg.tobytes(), media_type="image/jpeg")
 
 
 async def _start_all_cameras_streams() -> Dict[str, Any]:
