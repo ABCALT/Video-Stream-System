@@ -51,6 +51,7 @@ import sys
 module_path = "../../"
 sys.path.append(module_path)
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 from backend.api.device_management.camera_operation import (
@@ -61,6 +62,9 @@ from backend.api.device_management.camera_operation import (
     stop_cameras_healthcheck,
 )
 
+from backend.api.grounded_phrase.router import router as grounded_phrase_router
+from backend.api.grounded_tracking.router import router as grounded_tracking_router
+
 
 def create_app() -> FastAPI:
     app = FastAPI(
@@ -68,7 +72,19 @@ def create_app() -> FastAPI:
         version="1.0.0",
     )
 
+    # CORS for browser-based frontends.
+    # NOTE: For production, restrict origins.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     app.include_router(camera_operation_router)
+    app.include_router(grounded_phrase_router)
+    app.include_router(grounded_tracking_router)
 
     @app.on_event("startup")
     async def startup_event():

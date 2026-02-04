@@ -39,9 +39,13 @@
 - FFMPEG（视频流推送）
 - MediaMTX（RTSP服务器）
 
+（可选）算法能力：
+- Florence-2（grounded phrase）本地模型目录（默认 `../Florence-2-large-no-flash-attn`）
+- Grounded-SAM-2（grounded tracking）仓库与SAM2 checkpoint（默认从 `../Grounded-SAM-2` 解析）
+
 ### 1. 创建并激活环境
 
-```powershell
+```bash
 # 创建conda环境
 conda create -n video-stream python=3.10 -y
 
@@ -49,13 +53,23 @@ conda create -n video-stream python=3.10 -y
 conda activate video-stream
 
 # 安装依赖
-pip install fastapi uvicorn opencv-python requests pydantic pydantic-settings python-multipart httpx
+pip install -r requirements.txt
+
+# 如果要启用 grounded tracking（SAM2 + GroundingDINO），需要安装 Grounded-SAM-2 的 python 包
+# 假设当前工作目录在 Video-Stream-System，且同级目录存在 ../Grounded-SAM-2
+pip install -e ../Grounded-SAM-2
+
+# 如果要启用 grounded phrase（Florence-2），请确保 transformers/torch 可用
+# 并准备好 Florence-2 模型目录或设置环境变量 FLORENCE2_MODEL_ID
 ```
 
 ### 2. 启动后端服务
 
-```powershell
+```bash
 cd Video-Stream-System
+pip install -r requirements.txt
+
+# 入口兼容：backend.main:app -> backend.api.main:app
 python -m uvicorn backend.main:app --reload
 ```
 
@@ -68,6 +82,10 @@ python -m uvicorn backend.main:app --reload
 ```powershell
 python -m backend.test_api_http
 ```
+
+（可选）算法健康检查：
+- grounded phrase: `GET http://127.0.0.1:8000/api/grounded-phrase/health`
+- grounded tracking: `GET http://127.0.0.1:8000/api/grounded-tracking/health`
 
 ---
 
@@ -162,6 +180,44 @@ POST http://127.0.0.1:8000/api/stream/capture
 | DELETE | `/unregister/{id}` | 注销设备 | `id` (path) |
 | GET | `/info/{id}` | 获取设备详情 | `id` (path) |
 | GET | `/hello` | Hello World测试 | - |
+
+### 算法：Phrase Grounding（Florence-2） `/api/grounded-phrase`
+
+| 方法 | 接口 | 功能 | 参数 |
+|-----|------|-----|------|
+| GET | `/health` | 算法配置健康检查（不加载权重） | - |
+| POST | `/annotate` | base64输入，输出标注JPEG | `image_b64`, `prompt` |
+| POST | `/annotate_rtsp` | RTSP读取单帧，输出标注JPEG | `rtsp_url`, `prompt`, `timeout_sec?` |
+
+### 算法：Grounded Tracking（GroundingDINO + SAM2） `/api/grounded-tracking`
+
+| 方法 | 接口 | 功能 | 参数 |
+|-----|------|-----|------|
+| GET | `/health` | 配置/权重路径健康检查（不加载权重） | - |
+| POST | `/annotate_rtsp` | RTSP读取单帧，输出标注JPEG | `rtsp_url`, `text`, `thresholds?` |
+| GET | `/mjpeg` | 输出MJPEG流（RTSP输入） | `rtsp_url`, `text`, `step?`, `max_fps?` |
+
+### 设备流→算法（已打通） `/api/device/cameras/{camera_id}`
+
+| 方法 | 接口 | 功能 | 参数 |
+|-----|------|-----|------|
+| GET | `/grounded_phrase` | 用 camera 的 `protocol_in`(RTSP) 单帧做phrase grounding | `prompt`, `timeout_sec?` |
+| GET | `/grounded_tracking` | 用 camera 的 `protocol_in`(RTSP) 单帧做Grounded-SAM2标注 | `text`, `timeout_sec?` |
+
+#### 常用环境变量
+
+```bash
+# grounded phrase
+export FLORENCE2_MODEL_ID=../Florence-2-large-no-flash-attn
+export FLORENCE2_DEVICE=cuda:0
+export FLORENCE2_FP16=1
+
+# grounded tracking
+export SAM2_CHECKPOINT=../Grounded-SAM-2/checkpoints/sam2.1_hiera_large.pt
+export SAM2_CONFIG=../Grounded-SAM-2/sam2/configs/sam2.1/sam2.1_hiera_l.yaml
+export GROUNDED_TRACKING_DEVICE=cuda
+export GROUNDED_DINO_MODEL_ID=IDEA-Research/grounding-dino-tiny
+```
 
 ---
 

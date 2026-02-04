@@ -10,6 +10,12 @@ alembic==1.12.1
 opencv-python==4.8.1.78
 ffmpeg-python==0.2.0
 
+# ML / Grounding
+torch
+transformers
+pillow
+numpy
+
 # 工具库
 python-dotenv==1.0.0
 pydantic==2.5.0
